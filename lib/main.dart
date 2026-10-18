@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,10 +14,21 @@ void main() {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
-      scrollBehavior: ArchiveScrollBehavior(),
-      home: ArchiveRoom(),
+      scrollBehavior: const ArchiveScrollBehavior(),
+      theme: ThemeData(
+        colorScheme: const ColorScheme.light(
+          primary: Color(0xFF3A3733),
+          onPrimary: Colors.white,
+          secondary: Color(0xFF6E6A64),
+          onSecondary: Colors.white,
+          surface: Color(0xFFFBF9F4),
+          onSurface: Color(0xFF3A3733),
+        ),
+        scaffoldBackgroundColor: const Color(0xFFFBF9F4),
+      ),
+      home: const ArchiveRoom(),
     );
   }
 }
@@ -44,6 +56,7 @@ class ArchiveRoom extends StatefulWidget {
 class _ArchiveRoomState extends State<ArchiveRoom> {
   String selectedStatus = "Want to read";
   List<Book> books = [];
+  List<String> vinylFavorites = List.filled(12, '');
   @override
 void initState() {
   super.initState();
@@ -53,17 +66,41 @@ void initState() {
 Future<void> loadBooks() async {
   final prefs = await SharedPreferences.getInstance();
   final savedBooks = prefs.getString('saved_books');
-  print('SAVED BOOKS: $savedBooks');
-
   if (savedBooks != null) {
-  final List<dynamic> decodedBooks = jsonDecode(savedBooks);
+    try {
+      final List<dynamic> decodedBooks = jsonDecode(savedBooks);
+      final loaded = <Book>[];
+      for (final item in decodedBooks) {
+        try {
+          loaded.add(Book.fromJson(item as Map<String, dynamic>));
+        } catch (_) {
+          // Skip one unreadable record instead of losing the whole shelf.
+        }
+      }
+      setState(() {
+        books = loaded;
+      });
+    } catch (_) {
+      // Corrupt storage: keep the empty shelf instead of crashing.
+    }
+  }
 
-  setState(() {
-    books = decodedBooks
-        .map((item) => Book.fromJson(item as Map<String, dynamic>))
-        .toList();
-  });
-}
+  final savedVinyls = prefs.getString('saved_vinyls');
+  if (savedVinyls != null) {
+    try {
+      final List<dynamic> decodedVinyls = jsonDecode(savedVinyls);
+      setState(() {
+        vinylFavorites = [
+          for (var i = 0; i < 12; i++)
+            i < decodedVinyls.length && decodedVinyls[i] is String
+                ? decodedVinyls[i] as String
+                : '',
+        ];
+      });
+    } catch (_) {
+      // Keep the empty record wall instead of crashing.
+    }
+  }
 }
 Future<void> saveBooks() async {
   final prefs = await SharedPreferences.getInstance();
@@ -75,6 +112,120 @@ Future<void> saveBooks() async {
   await prefs.setString('saved_books', encodedBooks);
 }
 
+Future<void> saveVinyls() async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString('saved_vinyls', jsonEncode(vinylFavorites));
+}
+
+// Tap an empty slot to add a favorite; tap a filled one for options.
+void handleVinylTap(int index) {
+  final title = vinylFavorites[index];
+
+  if (title.isEmpty) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text("Add Favorite"),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: "Anime or movie"),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text("Close"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final name = controller.text.trim();
+              if (name.isNotEmpty) {
+                setState(() {
+                  vinylFavorites[index] = name;
+                });
+                saveVinyls();
+              }
+              Navigator.pop(dialogContext);
+            },
+            child: const Text("Add"),
+          ),
+        ],
+      ),
+    );
+    return;
+  }
+
+  showDialog(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(title),
+      content: const Text("Favorite anime or movie"),
+      actions: [
+        TextButton(
+          onPressed: () {
+            setState(() {
+              vinylFavorites[index] = "";
+            });
+            saveVinyls();
+            Navigator.pop(dialogContext);
+          },
+          child: const Text("Delete"),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text("Close"),
+        ),
+      ],
+    ),
+  );
+}
+
+// One slot of the vinyl wall: a record, or a dashed empty spot to fill.
+Widget vinylSlot(int index) {
+  final title = vinylFavorites[index];
+  return GestureDetector(
+    onTap: () => handleVinylTap(index),
+    behavior: HitTestBehavior.opaque,
+    child: SizedBox(
+      width: 88,
+      height: 90,
+      child: Column(
+        children: [
+          SizedBox(
+            width: 74,
+            height: 74,
+            child: CustomPaint(
+              painter: VinylPainter(
+                labelColor: const [
+                  Color(0xFFF2B8C6),
+                  Color(0xFFCDBCEB),
+                  Color(0xFFB8D8F0),
+                  Color(0xFFBFDCC5),
+                  Color(0xFFF5E3A6),
+                ][index % 5],
+                variant: index % 3,
+                empty: title.isEmpty,
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 8.5,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF3A3733),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 // One shelf: a bottom-aligned row of books that scrolls sideways
 // when the row is wider than the shelf.
 Widget shelfSpace(List<Book> shelfRowBooks) {
@@ -84,7 +235,7 @@ Widget shelfSpace(List<Book> shelfRowBooks) {
       decoration: BoxDecoration(
         color: const Color(0xFFFFFFFF),
         border: Border.all(
-          color: const Color(0xFF222222),
+          color: const Color(0xFF3A3733),
           width: 1.5,
         ),
       ),
@@ -225,34 +376,29 @@ Widget shelfBook(Book book, int position) {
       );
     },
     child: Container(
-      width: 24 + (position % 3) * 3,
-      height: 65,
+      width: 23 + (position % 4) * 3,
+      height: 58 + (position % 4) * 3,
       margin: const EdgeInsets.only(right: 4),
-      decoration: BoxDecoration(
-        color: book.color,
-        borderRadius: BorderRadius.circular(2),
-        border: Border.all(
-          color: const Color(0xFF222222),
-          width: 1,
+      child: CustomPaint(
+        painter: BookSpinePainter(
+          variant: (book.title.length + position) % 3,
+          fill: book.color,
         ),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x22000000),
-            blurRadius: 1,
-            offset: Offset(1, 1),
-          ),
-        ],
-      ),
-      alignment: Alignment.center,
-      child: RotatedBox(
-        quarterTurns: 3,
-        child: Text(
-          book.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Color(0xFF222222),
-            fontSize: 9,
+        child: Center(
+          child: RotatedBox(
+            quarterTurns: 3,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Text(
+                book.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFF3A3733),
+                  fontSize: 9,
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -287,8 +433,8 @@ Widget shelfBook(Book book, int position) {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  Color(0xFFFFFFFF),
-                  Color(0xFFF7F7F7),
+                  Color(0xFFFEFDFA),
+                  Color(0xFFF4F1EB),
                 ],
               ),
             ),
@@ -321,20 +467,20 @@ Widget shelfBook(Book book, int position) {
                   begin: Alignment.centerLeft,
                   end: Alignment.centerRight,
                   colors: [
-  Color(0xFFFFFFFF),
-  Color(0xFFF7F7F7),
-  Color(0xFFFFFFFF),
+  Color(0xFFFEFDFA),
+  Color(0xFFF2EFE8),
+  Color(0xFFFEFDFA),
 ],
 
                 ),
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(
-  color: const Color(0xFF222222),
-  width: 4,
+  color: const Color(0xFF3A3733),
+  width: 3,
 ),
                 boxShadow: const [
                   BoxShadow(
-                    color: Color(0x66000000),
+                    color: Color(0x59807A72),
                     blurRadius: 24,
                     offset: Offset(10, 12),
                   ),
@@ -344,10 +490,10 @@ Widget shelfBook(Book book, int position) {
               child: Container(
                 decoration: BoxDecoration(
                   border: Border.all(
-  color: const Color(0xFFD6D6D6),
-  width: 2,
+  color: const Color(0xFF8A857E),
+  width: 1.5,
 ),
-                  color: const Color(0xFFFFFFFF),
+                  color: const Color(0xFFFDFCF8),
                   borderRadius: BorderRadius.circular(2),
                 ),
                 child: Column(
@@ -363,18 +509,6 @@ Widget shelfBook(Book book, int position) {
             ),
           ),
           
-          // Hangingcreeper (non-interactive so it never blocks books)
-          Positioned(
-            left: 25,
-            top: 55,
-            width: 90,
-            height: 260,
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: CreeperPainter(),
-              ),
-            ),
-          ),
           // Reading chair
           Positioned(
             left: 340,
@@ -393,13 +527,13 @@ Widget shelfBook(Book book, int position) {
                     decoration: BoxDecoration(
                       color: Colors.white,
                       border: Border.all(
-                        color: const Color(0xFF222222),
-                        width: 4,
+                        color: const Color(0xFF3A3733),
+                        width: 3,
                       ),
                       borderRadius: BorderRadius.circular(8),
                       boxShadow: const [
   BoxShadow(
-    color: Color(0xFFD6D6D6),
+    color: Color(0xFFDCD7CF),
     offset: Offset(3, 3),
     blurRadius: 0,
   ),
@@ -428,8 +562,8 @@ Widget shelfBook(Book book, int position) {
                     decoration: BoxDecoration(
                       color: Colors.white,
                       border: Border.all(
-                        color: const Color(0xFF222222),
-                        width: 4,
+                        color: const Color(0xFF3A3733),
+                        width: 3,
                       ),
                       borderRadius: BorderRadius.circular(5),
                     ),
@@ -445,12 +579,12 @@ Positioned(
       Container(
         width: 2,
         height: 55,
-        color: const Color(0xFFD6D6D6),
+        color: const Color(0xFFDCD7CF),
       ),
       Container(
         width: 7,
         height: 55,
-        color: const Color(0xFF222222),
+        color: const Color(0xFF3A3733),
       ),
     ],
   ),
@@ -463,12 +597,12 @@ Positioned(
       Container(
         width: 7,
         height: 55,
-        color: const Color(0xFF222222),
+        color: const Color(0xFF3A3733),
       ),
       Container(
         width: 2,
         height: 55,
-        color: const Color(0xFFD6D6D6),
+        color: const Color(0xFFDCD7CF),
       ),
     ],
   ),
@@ -483,12 +617,12 @@ Positioned(
       Container(
         width: 2,
         height: 48,
-        color: const Color(0xFFD6D6D6),
+        color: const Color(0xFFDCD7CF),
       ),
       Container(
         width: 7,
         height: 48,
-        color: const Color(0xFF222222),
+        color: const Color(0xFF3A3733),
       ),
     ],
   ),
@@ -501,12 +635,12 @@ Positioned(
       Container(
         width: 7,
         height: 48,
-        color: const Color(0xFF222222),
+        color: const Color(0xFF3A3733),
       ),
       Container(
         width: 2,
         height: 48,
-        color: const Color(0xFFD6D6D6),
+        color: const Color(0xFFDCD7CF),
       ),
     ],
   ),
@@ -532,9 +666,9 @@ Positioned(
             width: 15,
             height: 25,
             decoration: BoxDecoration(
-              color: const Color(0xFFB8D8C0),
+              color: const Color(0xFFE9E5DC),
               border: Border.all(
-                color: const Color(0xFF222222),
+                color: const Color(0xFF3A3733),
                 width: 2,
               ),
               borderRadius: const BorderRadius.only(
@@ -547,9 +681,9 @@ Positioned(
             width: 15,
             height: 32,
             decoration: BoxDecoration(
-              color: const Color(0xFFCDBCEB),
+              color: const Color(0xFFF2EFE8),
               border: Border.all(
-                color: const Color(0xFF222222),
+                color: const Color(0xFF3A3733),
                 width: 2,
               ),
               borderRadius: const BorderRadius.only(
@@ -562,9 +696,9 @@ Positioned(
             width: 15,
             height: 22,
             decoration: BoxDecoration(
-              color: const Color(0xFFB8D8C0),
+              color: const Color(0xFFE9E5DC),
               border: Border.all(
-                color: const Color(0xFF222222),
+                color: const Color(0xFF3A3733),
                 width: 2,
               ),
               borderRadius: const BorderRadius.only(
@@ -581,9 +715,9 @@ Positioned(
         width: 48,
         height: 32,
         decoration: BoxDecoration(
-          color: const Color(0xFFF2B8C6),
+          color: const Color(0xFFE8E3D9),
           border: Border.all(
-            color: const Color(0xFF222222),
+            color: const Color(0xFF3A3733),
             width: 2,
           ),
           borderRadius: const BorderRadius.vertical(
@@ -591,7 +725,7 @@ Positioned(
           ),
           boxShadow: const [
             BoxShadow(
-              color: Color(0xFFD6D6D6),
+              color: Color(0xFFDCD7CF),
               offset: Offset(3, 3),
               blurRadius: 0,
             ),
@@ -619,12 +753,12 @@ Positioned(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-  color: const Color(0xFF222222),
-  width: 4,
+  color: const Color(0xFF3A3733),
+  width: 3,
 ),
 boxShadow: [
   BoxShadow(
-    color: const Color(0xFFD6D6D6),
+    color: const Color(0xFFDCD7CF),
     offset: const Offset(3, 3),
     blurRadius: 0,
   ),
@@ -637,12 +771,12 @@ boxShadow: [
   decoration: BoxDecoration(
     color: Colors.white,
     border: Border.all(
-      color: const Color(0xFF222222),
-      width: 4,
+      color: const Color(0xFF3A3733),
+      width: 3,
     ),
     boxShadow: [
       BoxShadow(
-        color: const Color(0xFFD6D6D6),
+        color: const Color(0xFFDCD7CF),
         offset: const Offset(3, 3),
         blurRadius: 0,
       ),
@@ -714,16 +848,15 @@ for (final entry in books
           ),
         );
       },
-      child: Container(
+      child: SizedBox(
         width: 45,
         height: 12,
-        decoration: BoxDecoration(
-          color: entry.value.value.color,
-          border: Border.all(
-            color: const Color(0xFF222222),
-            width: 2,
+        child: CustomPaint(
+          painter: BookSpinePainter(
+            variant: (entry.value.value.title.length + entry.key) % 3,
+            fill: entry.value.value.color,
+            lying: true,
           ),
-          borderRadius: BorderRadius.circular(2),
         ),
       ),
     ),
@@ -757,6 +890,7 @@ for (final entry in books
       setState(() {
         entry.value.value.status = "Currently reading";
       });
+      saveBooks();
       Navigator.pop(context);
     },
     child: const Text("Read now"),
@@ -791,27 +925,30 @@ for (final entry in books
                     ),
                   );
                 },
-                child: Container(
+                child: SizedBox(
                   width: 65,
                   height: 26,
-                  decoration: BoxDecoration(
-                    color: entry.value.value.color,
-                    border: Border.all(
-                      color: const Color(0xFF222222),
-                      width: 2,
+                  child: CustomPaint(
+                    painter: BookSpinePainter(
+                      variant: (entry.value.value.title.length + entry.key) % 3,
+                      fill: entry.value.value.color,
+                      lying: true,
                     ),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    entry.value.value.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-  fontSize: 9,
-  fontWeight: FontWeight.bold,
-  color: Color(0xFF222222),
-),
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 7),
+                        child: Text(
+                          entry.value.value.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF3A3733),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -828,8 +965,8 @@ for (final entry in books
               decoration: BoxDecoration(
                 color: Colors.white,
                 border: Border.all(
-                  color: const Color(0xFF222222),
-                  width: 4,
+                  color: const Color(0xFF3A3733),
+                  width: 3,
                 ),
               ),
               child: Center(
@@ -837,9 +974,9 @@ for (final entry in books
                   width: 60,
                   height: 40,
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF2B8C6),
+                    color: const Color(0xFFE8E3D9),
                     border: Border.all(
-                      color: const Color(0xFF222222),
+                      color: const Color(0xFF3A3733),
                       width: 2,
                     ),
                   ),
@@ -851,7 +988,7 @@ for (final entry in books
                         top: 5,
                         child: Container(
                           height: 1,
-                          color: const Color(0xFF222222),
+                          color: const Color(0xFF3A3733),
                         ),
                       ),
                       Positioned(
@@ -860,7 +997,7 @@ for (final entry in books
                         bottom: 5,
                         child: Container(
                           height: 1,
-                          color: const Color(0xFF222222),
+                          color: const Color(0xFF3A3733),
                         ),
                       ),
                     ],
@@ -879,7 +1016,7 @@ for (final entry in books
               height: 165,
               decoration: BoxDecoration(
                 color: Colors.white,
-                border: Border.all(color: const Color(0xFF222222), width: 4),
+                border: Border.all(color: const Color(0xFF3A3733), width: 3),
               ),
               child: Center(
                 child: Container(
@@ -894,6 +1031,51 @@ for (final entry in books
             ),
           ),
 
+          // Vinyl wall: favorite anime and movies, 4 across and 3 down
+          Positioned(
+            left: 620,
+            top: 145,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFDFCF8),
+                border: Border.all(
+                  color: const Color(0xFF3A3733),
+                  width: 3,
+                ),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0xFFDCD7CF),
+                    offset: Offset(4, 4),
+                    blurRadius: 0,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    "FAVORITES",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 3,
+                      color: Color(0xFF3A3733),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  for (var row = 0; row < 3; row++)
+                    Row(
+                      children: [
+                        for (var col = 0; col < 4; col++)
+                          vinylSlot(row * 4 + col),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+
           // Curtain rod
           Positioned(
             right: 0,
@@ -901,7 +1083,7 @@ for (final entry in books
             child: Container(
               width: 145,
               height: 5,
-              color: const Color(0xFF222222),
+              color: const Color(0xFF3A3733),
             ),
           ),
 
@@ -913,7 +1095,7 @@ for (final entry in books
               width: 16,
               height: 16,
               decoration: BoxDecoration(
-                color: const Color(0xFF222222),
+                color: const Color(0xFF3A3733),
                 shape: BoxShape.circle,
               ),
             ),
@@ -931,64 +1113,16 @@ for (final entry in books
               decoration: BoxDecoration(
                 color: Colors.white,
                 border: Border.all(
-                  color: const Color(0xFF222222),
+                  color: const Color(0xFF3A3733),
                   width: 3,
                 ),
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: List.generate(
-  5,
-  (index) => Container(
-    width: 1,
-    margin: const EdgeInsets.symmetric(horizontal: 2),
-    color: const Color(0xFF222222),
-  ),
-),
+              child: CustomPaint(
+                painter: CurtainPainter(),
               ),
             ),
           ),
            
-
-          // Night lamp
-          Positioned(
-            left: 690,
-            bottom: 285,
-            width: 70,
-            height: 110,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                Container(
-                  width: 70,
-                  height: 50,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                     color: const Color(0xFF222222),
-                      width: 3,
-                    ),
-                    
-                  ),
-                ),
-                Container(
-                  width: 8,
-                  height: 45,
-                  color: const Color(0xFF222222),
-                ),
-                Container(
-                  width: 35,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF222222),
-                    borderRadius: BorderRadius.circular(5),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
           // Welcome text
           const Positioned(
             top: 35,
@@ -999,7 +1133,8 @@ for (final entry in books
                 "Your shelves are waiting.",
                 style: TextStyle(
                   fontSize: 25,
-                  color: Color(0xFF4A3828),
+                  fontStyle: FontStyle.italic,
+                  color: Color(0xFF3A3733),
                 ),
               ),
             ),
@@ -1025,13 +1160,13 @@ for (final entry in books
   shape: RoundedRectangleBorder(
     borderRadius: BorderRadius.circular(18),
   ),
-      backgroundColor: const Color(0xFFF1D9E8),
+      backgroundColor: const Color(0xFFF7F5F0),
      title: const Text(
   "Add a new book",
   style: TextStyle(
     fontSize: 22,
     fontWeight: FontWeight.w600,
-    color: Color(0xFF4A3022),
+    color: Color(0xFF3A3733),
   ),
 ),
       content: Column(
@@ -1043,7 +1178,7 @@ for (final entry in books
   labelText: "Book title",
   hintText: "Enter the book title",
   filled: true,
-  fillColor: const Color(0xFFFFF8F0),
+  fillColor: const Color(0xFFF3F0EA),
   border: OutlineInputBorder(
     borderRadius: BorderRadius.circular(12),
     borderSide: BorderSide.none,
@@ -1057,7 +1192,7 @@ for (final entry in books
               labelText: "Author",
               hintText: "Enter the author's name",
               filled: true,
-              fillColor: const Color(0xFFFFF8F0),
+              fillColor: const Color(0xFFF3F0EA),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide.none,
@@ -1071,7 +1206,7 @@ for (final entry in books
   labelText: "Genre",
   hintText: "e.g. Fiction, Romance, Fantasy",
   filled: true,
-  fillColor: const Color(0xFFFFF8F0),
+  fillColor: const Color(0xFFF3F0EA),
   border: OutlineInputBorder(
     borderRadius: BorderRadius.circular(12),
     borderSide: BorderSide.none,
@@ -1085,7 +1220,7 @@ for (final entry in books
             decoration: InputDecoration(
               labelText: "Status",
               filled: true,
-              fillColor: const Color(0xFFFFF8F0),
+              fillColor: const Color(0xFFF3F0EA),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide.none,
@@ -1120,28 +1255,28 @@ for (final entry in books
     child: const Text("Close"),
   ),
   ElevatedButton(
-    onPressed: () {
+    onPressed: () async {
       setState(() {
-  books.add(
-    Book(
-  title: titleController.text,
-  author: authorController.text,
-  genre: genreController.text,
-  status: selectedStatus,
-  color: [
-    const Color(0xFFF2B8C6), // Pastel pink
-    const Color(0xFFCDBCEB), // Lavender
-    const Color(0xFFB8D8F0), // Baby blue
-    const Color(0xFFBFDCC5), // Mint green
-    const Color(0xFFF5E3A6), // Butter yellow
-  ][books.length % 5],
-
-),
-  );
-});
-       saveBooks();
-      
-      Navigator.pop(context);
+        books.add(
+          Book(
+            title: titleController.text,
+            author: authorController.text,
+            genre: genreController.text,
+            status: selectedStatus,
+            color: [
+              const Color(0xFFF2B8C6), // Pastel pink
+              const Color(0xFFCDBCEB), // Lavender
+              const Color(0xFFB8D8F0), // Baby blue
+              const Color(0xFFBFDCC5), // Mint green
+              const Color(0xFFF5E3A6), // Butter yellow
+            ][books.length % 5],
+          ),
+        );
+      });
+      await saveBooks();
+      if (context.mounted) {
+        Navigator.pop(context);
+      }
     },
     child: const Text("Save Book"),
   ),
@@ -1153,8 +1288,12 @@ for (final entry in books
               icon: const Icon(Icons.add),
               label: const Text("Add a Book"),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-foregroundColor: Colors.black,
+                backgroundColor: const Color(0xFFFBF9F4),
+                foregroundColor: const Color(0xFF3A3733),
+                side: const BorderSide(
+                  color: Color(0xFF3A3733),
+                  width: 2,
+                ),
                 padding: const EdgeInsets.symmetric(
   horizontal: 20,
   vertical: 13,
@@ -1178,13 +1317,13 @@ Widget shelfBoard() {
   color: Color(0xFFFFFFFF),
   border: Border(
     top: BorderSide(
-      color: Color(0xFF222222),
+      color: Color(0xFF3A3733),
       width: 2,
     ),
   ),
       boxShadow: [
         BoxShadow(
-          color: Color(0x66000000),
+          color: Color(0x66807A72),
           blurRadius: 5,
           offset: Offset(0, 3),
         ),
@@ -1193,58 +1332,299 @@ Widget shelfBoard() {
   );
 }
 
-class CreeperPainter extends CustomPainter {
+// One book spine, drawn like a small pencil study: capped ends,
+// head and tail bands, raised bands or a title plate, edge shading.
+class BookSpinePainter extends CustomPainter {
+  BookSpinePainter({
+    required this.variant,
+    required this.fill,
+    this.lying = false,
+  });
+
+  final int variant;
+  final Color fill;
+  final bool lying;
+
   @override
   void paint(Canvas canvas, Size size) {
-    final vine = Paint()
-      ..color = const Color(0xFF536B3A)
-      ..strokeWidth = 4
+    if (lying) {
+      // A quarter turn lays the standing spine flat.
+      canvas.save();
+      canvas.translate(size.width / 2, size.height / 2);
+      canvas.rotate(math.pi / 2);
+      canvas.translate(-size.height / 2, -size.width / 2);
+      _paintSpine(canvas, Size(size.height, size.width));
+      canvas.restore();
+      return;
+    }
+    _paintSpine(canvas, size);
+  }
+
+  void _paintSpine(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+
+    final ink = Paint()
+      ..color = const Color(0xFF3A3733)
       ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2;
+    final inkSoft = Paint()
+      ..color = const Color(0xFF8A857E)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8;
+
+    final body = RRect.fromRectAndRadius(
+      Rect.fromLTWH(0.6, 0.6, w - 1.2, h - 1.2),
+      const Radius.circular(2.5),
+    );
+
+    // Body with a hint of roundness along the edges.
+    canvas.drawRRect(body, Paint()..color = fill);
+    canvas.save();
+    canvas.clipRRect(body);
+    canvas.drawLine(
+      const Offset(2.4, 0),
+      Offset(2.4, h),
+      Paint()
+        ..color = const Color(0x335A554E)
+        ..strokeWidth = 1.4,
+    );
+    canvas.drawLine(
+      Offset(w - 2.2, 0),
+      Offset(w - 2.2, h),
+      Paint()
+        ..color = const Color(0x405A554E)
+        ..strokeWidth = 1.6,
+    );
+    canvas.restore();
+
+    // Head and tail bands.
+    final band = Paint()..color = const Color(0xFF4A463F);
+    canvas.drawRect(Rect.fromLTWH(1.4, 1.6, w - 2.8, 1.8), band);
+    canvas.drawRect(Rect.fromLTWH(1.4, h - 3.4, w - 2.8, 1.8), band);
+    canvas.drawLine(Offset(1.6, 4.2), Offset(w - 1.6, 4.2), inkSoft);
+    canvas.drawLine(Offset(1.6, h - 4.6), Offset(w - 1.6, h - 4.6), inkSoft);
+
+    // Raised bands or a title plate, by variant.
+    if (variant == 0) {
+      for (final f in const [0.20, 0.80]) {
+        canvas.drawLine(Offset(1.6, h * f), Offset(w - 1.6, h * f), inkSoft);
+        canvas.drawLine(
+          Offset(1.6, h * f + 1.4),
+          Offset(w - 1.6, h * f + 1.4),
+          inkSoft,
+        );
+      }
+    } else if (variant == 1) {
+      for (final f in const [0.14, 0.24, 0.34, 0.76]) {
+        canvas.drawLine(Offset(1.6, h * f), Offset(w - 1.6, h * f), inkSoft);
+      }
+    } else {
+      final plate = RRect.fromRectAndRadius(
+        Rect.fromLTWH(w * 0.18, h * 0.2, w * 0.64, h * 0.6),
+        const Radius.circular(2),
+      );
+      canvas.drawRRect(plate, Paint()..color = const Color(0x1A5A554E));
+      canvas.drawRRect(plate, inkSoft);
+    }
+
+    // Sketchy double outline.
+    canvas.drawRRect(body, ink);
+    canvas.drawRRect(
+      body.inflate(0.5).shift(const Offset(0.4, 0.3)),
+      Paint()
+        ..color = const Color(0x668A857E)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.7,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant BookSpinePainter oldDelegate) =>
+      oldDelegate.variant != variant ||
+      oldDelegate.fill != fill ||
+      oldDelegate.lying != lying;
+}
+
+// Vinyl on the favorites wall, or an empty slot waiting to be filled.
+class VinylPainter extends CustomPainter {
+  VinylPainter({
+    required this.labelColor,
+    required this.variant,
+    required this.empty,
+  });
+
+  final Color labelColor;
+  final int variant;
+  final bool empty;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = math.min(size.width, size.height) / 2 - 1;
+
+    if (empty) {
+      // Dashed outline and a plus: an empty spot inviting a favorite.
+      final dash = Paint()
+        ..color = const Color(0x668A857E)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.1;
+      for (var i = 0; i < 12; i++) {
+        canvas.drawArc(
+          Rect.fromCircle(center: center, radius: radius * 0.82),
+          i * math.pi / 6,
+          math.pi / 12,
+          false,
+          dash,
+        );
+      }
+      final plus = Paint()
+        ..color = const Color(0xFF8A857E)
+        ..strokeWidth = 1.4
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(
+        center - Offset(radius * 0.22, 0),
+        center + Offset(radius * 0.22, 0),
+        plus,
+      );
+      canvas.drawLine(
+        center - Offset(0, radius * 0.22),
+        center + Offset(0, radius * 0.22),
+        plus,
+      );
+      return;
+    }
+
+    // The record itself.
+    canvas.drawCircle(center, radius, Paint()..color = const Color(0xFF36332F));
+
+    // Groove rings, by variant.
+    final groove = Paint()
+      ..color = const Color(0x479A948C)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.7;
+    const ringSets = [
+      [0.96, 0.89, 0.82, 0.75, 0.68],
+      [0.96, 0.91, 0.86, 0.56, 0.49],
+      [0.94, 0.72, 0.55],
+    ];
+    for (final f in ringSets[variant % ringSets.length]) {
+      canvas.drawCircle(center, radius * f, groove);
+    }
+
+    // Glossy glints over the record.
+    final glint = Paint()
+      ..color = const Color(0x40FFFFFF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius * 0.88),
+      -2.4,
+      0.9,
+      false,
+      glint,
+    );
+    glint.color = const Color(0x26FFFFFF);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius * 0.55),
+      -2.2,
+      0.6,
+      false,
+      glint,
+    );
+
+    // Center label with a spindle hole.
+    canvas.drawCircle(center, radius * 0.34, Paint()..color = labelColor);
+    canvas.drawCircle(
+      center,
+      radius * 0.34,
+      Paint()
+        ..color = const Color(0xFF8A857E)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8,
+    );
+    canvas.drawCircle(center, 1.7, Paint()..color = const Color(0xFFFDFCF8));
+    canvas.drawCircle(
+      center,
+      1.7,
+      Paint()
+        ..color = const Color(0x663A3733)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.6,
+    );
+
+    // Sketchy outline, with a loose second stroke.
+    final ink = Paint()
+      ..color = const Color(0xFF3A3733)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2;
+    canvas.drawCircle(center, radius, ink);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius + 0.6),
+      -0.9,
+      1.6,
+      false,
+      Paint()
+        ..color = const Color(0x668A857E)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.7,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant VinylPainter oldDelegate) =>
+      oldDelegate.labelColor != labelColor ||
+      oldDelegate.variant != variant ||
+      oldDelegate.empty != empty;
+}
+
+// Curtain folds, drawn like loose pencil strokes.
+class CurtainPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final fold = Paint()
+      ..color = const Color(0xFF3A3733)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.1
+      ..strokeCap = StrokeCap.round;
+    final foldSoft = Paint()
+      ..color = const Color(0xFF9A948C)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8
+      ..strokeCap = StrokeCap.round;
+    final shade = Paint()
+      ..color = const Color(0x14807A72)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
 
-    final leaf = Paint()
-      ..color = const Color(0xFF718A4D)
-      ..style = PaintingStyle.fill;
+    final w = size.width;
+    final h = size.height;
+    const folds = 5;
 
-    final path = Path()
-      ..moveTo(10, 0)
-      ..cubicTo(5, 45, 35, 65, 25, 105)
-      ..cubicTo(15, 145, 45, 165, 35, 215)
-      ..cubicTo(30, 235, 40, 250, 50, 260);
-
-
-canvas.drawPath(path, vine);
-
-    final leaves = [
-      Offset(12, 35),
-      Offset(28, 65),
-      Offset(22, 105),
-      Offset(38, 140),
-      Offset(32, 180),
-      Offset(40, 220),
-      Offset(50, 245),
-    ];
-
-    for (final position in leaves) {
-      canvas.save();
-      canvas.translate(position.dx, position.dy);
-      canvas.rotate(-0.5);
-
-      final leafPath = Path()
-        ..moveTo(0, 0)
-        ..quadraticBezierTo(18, -12, 22, 2)
-        ..quadraticBezierTo(12, 12, 0, 0);
-
-      canvas.drawPath(leafPath, leaf);
-      canvas.restore();
+    for (var i = 1; i <= folds; i++) {
+      final x = i * w / (folds + 1);
+      final sway = i.isEven ? 2.6 : -2.2;
+      final foldPath = Path()
+        ..moveTo(x + sway, 1)
+        ..quadraticBezierTo(x - sway, h * 0.5, x + sway, h - 1);
+      // Soft shading beside each fold.
+      canvas.drawPath(
+        Path()
+          ..moveTo(x + sway + 4, 1)
+          ..quadraticBezierTo(x - sway + 4, h * 0.5, x + sway + 4, h - 1),
+        shade,
+      );
+      canvas.drawPath(foldPath, fold);
+      canvas.drawPath(foldPath.shift(const Offset(1.4, 0.7)), foldSoft);
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return false;
-  }
+  bool shouldRepaint(covariant CurtainPainter oldDelegate) => false;
 }
+
 class Book {
    String title;
    String author;
@@ -1270,11 +1650,11 @@ class Book {
 }
  factory Book.fromJson(Map<String, dynamic> json) {
     return Book(
-      title: json['title'],
-      author: json['author'],
-      genre: json['genre'],
-      status: json['status'],
-      color: Color(json['color']),
+      title: json['title'] ?? 'Untitled',
+      author: json['author'] ?? 'Unknown',
+      genre: json['genre'] ?? '',
+      status: json['status'] ?? 'Want to read',
+      color: Color((json['color'] as int?) ?? 0xFFEDE9E1),
     );
   }
 }
@@ -1284,22 +1664,32 @@ class CheckerFloorPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     const tileSize = 32.0;
 
-    final white = Paint()..color = Colors.white;
-    final black = Paint()..color = const Color(0xFF222222);
+    final paper = Paint()..color = const Color(0xFFFBF9F4);
+    final dark = Paint()..color = const Color(0xFF3A3733);
 
-    for (int row = 0; row * tileSize < size.height; row++) {
-      for (int col = 0; col * tileSize < size.width; col++) {
-        canvas.drawRect(
-          Rect.fromLTWH(
-            col * tileSize,
-            row * tileSize,
-            tileSize,
-            tileSize,
-          ),
-          (row + col).isEven ? white : black,
+    for (var row = 0; row * tileSize < size.height; row++) {
+      for (var col = 0; col * tileSize < size.width; col++) {
+        final tile = Rect.fromLTWH(
+          col * tileSize,
+          row * tileSize,
+          tileSize,
+          tileSize,
         );
+        canvas.drawRect(tile, (row + col).isOdd ? dark : paper);
       }
     }
+
+    // Sketchy front edge where the floor meets the wall.
+    final edge = Paint()
+      ..color = const Color(0xFF3A3733)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4;
+    final edgeSoft = Paint()
+      ..color = const Color(0xFF9A948C)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.9;
+    canvas.drawLine(const Offset(0, 1.2), Offset(size.width, 1.2), edge);
+    canvas.drawLine(const Offset(0, 3.6), Offset(size.width, 3.0), edgeSoft);
   }
 
   @override
@@ -1308,7 +1698,7 @@ class CheckerFloorPainter extends CustomPainter {
 
 // The jolly roger, drawn in the flag's own 100x66 space.
 void _paintJollyRoger(Canvas canvas) {
-  final dark = Paint()..color = const Color(0xFF222222);
+  final dark = Paint()..color = const Color(0xFF3A3733);
   final bone = Paint()..color = const Color(0xFFEDE7DA);
   final skull = Paint()..color = const Color(0xFFFDFBF6);
   final hat = Paint()..color = const Color(0xFFFFFFFF);
@@ -1348,7 +1738,7 @@ void _paintJollyRoger(Canvas canvas) {
   canvas.drawPath(
     grin,
     Paint()
-      ..color = const Color(0xFF222222)
+      ..color = const Color(0xFF3A3733)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.8
       ..strokeCap = StrokeCap.round,
