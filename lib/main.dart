@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -14,9 +15,24 @@ void main() {
   Widget build(BuildContext context) {
     return const MaterialApp(
       debugShowCheckedModeBanner: false,
+      scrollBehavior: ArchiveScrollBehavior(),
       home: ArchiveRoom(),
     );
   }
+}
+
+// Lets the shelf rows be dragged sideways with a mouse or trackpad,
+// not only with a finger.
+class ArchiveScrollBehavior extends MaterialScrollBehavior {
+  const ArchiveScrollBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => const {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+      };
 }
 class ArchiveRoom extends StatefulWidget {
   const ArchiveRoom({super.key});
@@ -59,10 +75,208 @@ Future<void> saveBooks() async {
   await prefs.setString('saved_books', encodedBooks);
 }
 
+// One shelf: a bottom-aligned row of books that scrolls sideways
+// when the row is wider than the shelf.
+Widget shelfSpace(List<Book> shelfRowBooks) {
+  return Expanded(
+    child: Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFFFF),
+        border: Border.all(
+          color: const Color(0xFF222222),
+          width: 1.5,
+        ),
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              height: constraints.maxHeight,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const SizedBox(width: 5),
+                  for (var i = 0; i < shelfRowBooks.length; i++)
+                    shelfBook(shelfRowBooks[i], i),
+                  const SizedBox(width: 5),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    ),
+  );
+}
+
+// A single book spine standing on the shelf.
+Widget shelfBook(Book book, int position) {
+  return GestureDetector(
+    onTap: () {
+      showDialog(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: Text(book.title),
+            content: Text(
+              "Author: ${book.author}\n"
+              "Genre: ${book.genre}\n"
+              "Status: ${book.status}",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    book.status = "Currently reading";
+                  });
+                  saveBooks();
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text("Read now"),
+              ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    book.status = "Want to read";
+                  });
+                  saveBooks();
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text("Want to read"),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+
+                  final titleController =
+                      TextEditingController(text: book.title);
+                  final authorController =
+                      TextEditingController(text: book.author);
+                  final genreController =
+                      TextEditingController(text: book.genre);
+
+                  showDialog(
+                    context: context,
+                    builder: (editContext) => AlertDialog(
+                      title: const Text("Edit Book"),
+                      content: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextField(
+                            controller: titleController,
+                            decoration:
+                                const InputDecoration(labelText: "Title"),
+                          ),
+                          TextField(
+                            controller: authorController,
+                            decoration:
+                                const InputDecoration(labelText: "Author"),
+                          ),
+                          TextField(
+                            controller: genreController,
+                            decoration:
+                                const InputDecoration(labelText: "Genre"),
+                          ),
+                        ],
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(editContext),
+                          child: const Text("Cancel"),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            setState(() {
+                              book.title = titleController.text;
+                              book.author = authorController.text;
+                              book.genre = genreController.text;
+                            });
+                            saveBooks();
+                            Navigator.pop(editContext);
+                          },
+                          child: const Text("Save"),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+                child: const Text("Edit"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text("Close"),
+              ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    books.remove(book);
+                  });
+                  saveBooks();
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text("Delete"),
+              ),
+            ],
+          );
+        },
+      );
+    },
+    child: Container(
+      width: 24 + (position % 3) * 3,
+      height: 65,
+      margin: const EdgeInsets.only(right: 4),
+      decoration: BoxDecoration(
+        color: book.color,
+        borderRadius: BorderRadius.circular(2),
+        border: Border.all(
+          color: const Color(0xFF222222),
+          width: 1,
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x22000000),
+            blurRadius: 1,
+            offset: Offset(1, 1),
+          ),
+        ],
+      ),
+      alignment: Alignment.center,
+      child: RotatedBox(
+        quarterTurns: 3,
+        child: Text(
+          book.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Color(0xFF222222),
+            fontSize: 9,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
   
 
   @override
   Widget build(BuildContext context) {
+    final finishedBooks =
+        books.where((book) => book.status == "Finished").toList();
+
+    // Finished books fill the shelves from the bottom up, seven per
+    // shelf so that every populated row has more books than fit and
+    // scrolls sideways. Extra books stay on the top shelf.
+    const booksPerShelf = 7;
+    final shelfRows = List<List<Book>>.generate(5, (_) => <Book>[]);
+    for (var i = 0; i < finishedBooks.length; i++) {
+      final level = i ~/ booksPerShelf;
+      shelfRows[level > 4 ? 4 : level].add(finishedBooks[i]);
+    }
+
     return Scaffold(
       body: Stack(
         children: [
@@ -76,6 +290,21 @@ Future<void> saveBooks() async {
                   Color(0xFFFFFFFF),
                   Color(0xFFF7F7F7),
                 ],
+              ),
+            ),
+          ),
+
+          // Wooden floor. Kept beneath the bookshelf and non-interactive,
+          // so it never paints over or blocks the shelf rows.
+          IgnorePointer(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: SizedBox(
+                height: 160,
+                width: double.infinity,
+                child: CustomPaint(
+                  painter: CheckerFloorPainter(),
+                ),
               ),
             ),
           ),
@@ -122,187 +351,31 @@ Future<void> saveBooks() async {
                   borderRadius: BorderRadius.circular(2),
                 ),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    shelfSpace(),
-                    shelfBoard(),
-                    shelfSpace(),
-                    shelfBoard(),
-                    shelfSpace(),
-                    shelfBoard(),
-                    shelfSpace(),
-                    shelfBoard(),
-                    shelfSpace(),
+                    for (var level = 4; level >= 0; level--) ...[
+                      shelfSpace(shelfRows[level]),
+                      if (level > 0) shelfBoard(),
+                    ],
                   ],
                 ),
               ),
             ),
           ),
           
-          // Hangingcreeper
+          // Hangingcreeper (non-interactive so it never blocks books)
           Positioned(
             left: 25,
             top: 55,
             width: 90,
             height: 260,
-            child: CustomPaint(
-              painter: CreeperPainter(),
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: CreeperPainter(),
+              ),
             ),
           ),
-for (final entry in books
-    .asMap()
-    .entries
-    .where((entry) => entry.value.status == "Finished"))
-  Positioned(
-    left: 70 + ((entry.key % 5) * 30),
-top: 465 - ((entry.key ~/ 5) * 105),
-    child: GestureDetector(
-      onTap: () {
-  showDialog(
-    context: context,
-    builder: (context) {
-      return AlertDialog(
-        title: Text(entry.value.title),
-        content: Text(
-          "Author: ${entry.value.author}\n"
-          "Genre: ${entry.value.genre}\n"
-          "Status: ${entry.value.status}",
-        ),
-        actions: [
-  TextButton(
-    onPressed: () {
-      setState(() {
-        entry.value.status = "Currently reading";
-      });
-       saveBooks();
-      Navigator.pop(context);
-    },
-    child: const Text("Read now"),
-  ),
-  TextButton(
-    onPressed: () {
-      setState(() {
-        entry.value.status = "Want to read";
-      });
-       saveBooks();
-      Navigator.pop(context);
-    },
-    child: const Text("Want to read"),
-  ),
-  TextButton(
-  onPressed: () {
-    Navigator.pop(context);
-
-    final titleController =
-        TextEditingController(text: entry.value.title);
-    final authorController =
-        TextEditingController(text: entry.value.author);
-    final genreController =
-        TextEditingController(text: entry.value.genre);
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Edit Book"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: const InputDecoration(labelText: "Title"),
-            ),
-            TextField(
-              controller: authorController,
-              decoration: const InputDecoration(labelText: "Author"),
-            ),
-            TextField(
-              controller: genreController,
-              decoration: const InputDecoration(labelText: "Genre"),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Cancel"),
-          ),
-          TextButton(
-            onPressed: () {
-              setState(() {
-                entry.value.title = titleController.text;
-                entry.value.author = authorController.text;
-                entry.value.genre = genreController.text;
-              });
-
-              saveBooks();
-              Navigator.pop(context);
-            },
-            child: const Text("Save"),
-          ),
-        ],
-      ),
-    );
-  },
-  child: const Text("Edit"),
-),
-  
-  TextButton(
-    onPressed: () => Navigator.pop(context),
-    child: const Text("Close"),
-  ),
-  TextButton(
-  onPressed: () {
-    setState(() {
-      books.remove(entry.value);
-    });
-    saveBooks();
-    Navigator.pop(context);
-  },
-  child: const Text("Delete"),
-),
-],
-      );
-    },
-  );
-},
-      child: Container(
-        width: 24 + (entry.key % 3) * 3,
-        height: 65,
-        decoration: BoxDecoration(
-          color: entry.value.color,
-          borderRadius: BorderRadius.circular(2),
-          border: Border.all(
-  color: const Color(0xFF222222),
-  width: 1,
-),
-
-          boxShadow: const [
-  BoxShadow(
-    color: Color(0x22000000),
-    blurRadius: 1,
-    offset: Offset(1, 1),
-  ),
-],
-
-        ),
-        alignment: Alignment.center,
-        child: RotatedBox(
-          quarterTurns: 3,
-          child: Text(
-            entry.value.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Color(0xFF222222),
-fontSize: 9,
-            ),
-          ),
-        ),
-      ),
-    ),
-  ),
-
-                  
-        // Reading chair
+          // Reading chair
           Positioned(
             left: 340,
             bottom: 130,
@@ -797,6 +870,29 @@ for (final entry in books
             ),
           ),
 
+          // One Piece frame on the right wall, near the curtain
+          Positioned(
+            right: 160,
+            top: 200,
+            child: Container(
+              width: 130,
+              height: 165,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: const Color(0xFF222222), width: 4),
+              ),
+              child: Center(
+                child: Container(
+                  width: 94,
+                  height: 129,
+                  color: const Color(0xFF1C1C1C),
+                  child: CustomPaint(
+                    painter: OnePieceArtPainter(),
+                  ),
+                ),
+              ),
+            ),
+          ),
 
           // Curtain rod
           Positioned(
@@ -892,19 +988,6 @@ for (final entry in books
               ],
             ),
           ),
-
-          // Wooden floor
-          Align(
-  alignment: Alignment.bottomCenter,
-  child: SizedBox(
-    height: 160,
-    width: double.infinity,
-    child: CustomPaint(
-      painter: CheckerFloorPainter(),
-    ),
-  ),
-),
-
 
           // Welcome text
           const Positioned(
@@ -1088,21 +1171,6 @@ foregroundColor: Colors.black,
   }
 }
 
-Widget shelfSpace() {
-  return Expanded(
-    child: Container(
-      margin: const EdgeInsets.symmetric(vertical: 7),
-      decoration: BoxDecoration(
-  color: const Color(0xFFFFFFFF),
-  border: Border.all(
-    color: const Color(0xFF222222),
-    width: 1.5,
-  ),
-),
-    ),
-  );
-}
-
 Widget shelfBoard() {
   return Container(
     height: 12,
@@ -1236,5 +1304,118 @@ class CheckerFloorPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CheckerFloorPainter oldDelegate) => false;
+}
+
+// The jolly roger, drawn in the flag's own 100x66 space.
+void _paintJollyRoger(Canvas canvas) {
+  final dark = Paint()..color = const Color(0xFF222222);
+  final bone = Paint()..color = const Color(0xFFEDE7DA);
+  final skull = Paint()..color = const Color(0xFFFDFBF6);
+  final hat = Paint()..color = const Color(0xFFFFFFFF);
+
+  // Crossbones behind the skull.
+  final boneStroke = Paint()
+    ..color = const Color(0xFFEDE7DA)
+    ..strokeWidth = 5
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(const Offset(32, 29), const Offset(64, 43), boneStroke);
+  canvas.drawLine(const Offset(32, 43), const Offset(64, 29), boneStroke);
+  for (final knob in const [
+    Offset(32, 29),
+    Offset(64, 43),
+    Offset(32, 43),
+    Offset(64, 29),
+  ]) {
+    canvas.drawCircle(knob, 3.5, bone);
+  }
+
+  // Skull with jaw.
+  canvas.drawCircle(const Offset(48, 27), 12, skull);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      const Rect.fromLTRB(39, 34, 57, 46),
+      const Radius.circular(4),
+    ),
+    skull,
+  );
+
+  // Eyes and grin.
+  canvas.drawCircle(const Offset(43, 28.5), 3, dark);
+  canvas.drawCircle(const Offset(53, 28.5), 3, dark);
+  final grin = Path()
+    ..moveTo(40.5, 40.5)
+    ..quadraticBezierTo(48, 44, 55.5, 40.5);
+  canvas.drawPath(
+    grin,
+    Paint()
+      ..color = const Color(0xFF222222)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round,
+  );
+
+  // Straw hat: white dome, dark band, wide brim.
+  canvas.drawCircle(const Offset(48, 12), 12.5, dark);
+  canvas.drawCircle(const Offset(48, 12), 11, hat);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      const Rect.fromLTRB(37.5, 12, 58.5, 18.5),
+      const Radius.circular(2),
+    ),
+    dark,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      const Rect.fromLTRB(38.5, 13, 57.5, 17.5),
+      const Radius.circular(1.5),
+    ),
+    dark,
+  );
+  canvas.drawOval(
+    Rect.fromCenter(center: const Offset(48, 22.5), width: 35, height: 8.5),
+    dark,
+  );
+  canvas.drawOval(
+    Rect.fromCenter(center: const Offset(48, 22.5), width: 32, height: 6.5),
+    hat,
+  );
+}
+
+// Framed One Piece print hanging on the right wall.
+class OnePieceArtPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    // The print is designed in a 94x129 space and scaled to fit.
+    canvas.save();
+    canvas.scale(size.width / 94, size.height / 129);
+
+    // "WANTED" headline.
+    final title = TextPainter(
+      text: const TextSpan(
+        text: 'WANTED',
+        style: TextStyle(
+          color: Color(0xFFFDFBF6),
+          fontSize: 13,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 2.5,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    title.paint(canvas, Offset((94 - title.width) / 2, 11));
+
+    // Jolly roger, reusing the flag's 100x66 artwork space.
+    canvas.save();
+    canvas.translate(47, 84);
+    canvas.scale(1.7);
+    canvas.translate(-48, -23.5);
+    _paintJollyRoger(canvas);
+    canvas.restore();
+
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant OnePieceArtPainter oldDelegate) => false;
 }
 
